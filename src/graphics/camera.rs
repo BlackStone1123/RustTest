@@ -4,10 +4,7 @@ pub struct Camera {
     pub eye: cgmath::Point3<f32>,
     target: cgmath::Point3<f32>,
     up: cgmath::Vector3<f32>,
-    aspect: f32,
-    fovy: f32,
-    znear: f32,
-    zfar: f32,
+    projector: Box<dyn Projector>,
     buffer: Option<wgpu::Buffer>,
 }
 #[rustfmt::skip]
@@ -21,7 +18,7 @@ const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
 impl Camera {
     fn build_view_projection_matrix(&self) -> cgmath::Matrix4<f32> {
         let view = cgmath::Matrix4::look_at_rh(self.eye, self.target, self.up);
-        let proj = cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar);
+        let proj = self.projector.get_projection_matrix();
         return OPENGL_TO_WGPU_MATRIX * proj * view;
     }
 
@@ -55,7 +52,7 @@ impl Camera {
         );
     }
 
-    pub fn make(
+    pub fn make_perspective(
         eye: cgmath::Point3<f32>,
         target: cgmath::Point3<f32>,
         up: cgmath::Vector3<f32>,
@@ -64,15 +61,48 @@ impl Camera {
         znear: f32,
         zfar: f32,
     ) -> Camera {
-        Camera {
-            eye,
-            target,
-            up,
+        let perspective = PerspectiveProjector {
             aspect,
             fovy,
             znear,
             zfar,
+        };
+
+        Camera {
+            eye,
+            target,
+            up,
             buffer: None,
+            projector: Box::new(perspective),
+        }
+    }
+
+    pub fn make_orthogonal(
+        eye: cgmath::Point3<f32>,
+        target: cgmath::Point3<f32>,
+        up: cgmath::Vector3<f32>,
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> Camera {
+        let ortho = OrthoProjector {
+            left,
+            right,
+            top,
+            bottom,
+            near,
+            far,
+        };
+
+        Camera {
+            eye,
+            target,
+            up,
+            buffer: None,
+            projector: Box::new(ortho),
         }
     }
 }
@@ -97,5 +127,44 @@ impl CameraUniform {
 
     fn update_view_proj(&mut self, camera: &Camera) {
         self.view_proj = camera.build_view_projection_matrix().into();
+    }
+}
+
+trait Projector {
+    fn get_projection_matrix(&self) -> cgmath::Matrix4<f32>;
+}
+
+struct PerspectiveProjector {
+    aspect: f32,
+    fovy: f32,
+    znear: f32,
+    zfar: f32,
+}
+
+impl Projector for PerspectiveProjector {
+    fn get_projection_matrix(&self) -> cgmath::Matrix4<f32> {
+        cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar)
+    }
+}
+
+struct OrthoProjector {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    near: f32,
+    far: f32,
+}
+
+impl Projector for OrthoProjector {
+    fn get_projection_matrix(&self) -> cgmath::Matrix4<f32> {
+        cgmath::ortho(
+            self.left,
+            self.right,
+            self.bottom,
+            self.top,
+            self.near,
+            self.far,
+        )
     }
 }

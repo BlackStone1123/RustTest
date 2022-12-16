@@ -1,11 +1,19 @@
 use cgmath::*;
 use wgpu::util::DeviceExt;
-
+pub trait MatrixInstance {
+    fn to_raw(&self) -> InstanceRaw;
+    fn update(&mut self, time: f32) {}
+}
 pub struct Instance {
     position: cgmath::Vector3<f32>,
     rotation: cgmath::Quaternion<f32>,
+    scale: cgmath::Vector3<f32>,
+}
+
+pub struct ArrayInstance {
     x: u32,
     z: u32,
+    instance: Instance,
 }
 
 #[repr(C)]
@@ -14,29 +22,28 @@ pub struct InstanceRaw {
     pub model: [[f32; 4]; 4],
 }
 
-impl Instance {
+impl MatrixInstance for Instance {
     fn to_raw(&self) -> InstanceRaw {
         InstanceRaw {
             model: (cgmath::Matrix4::from_translation(self.position)
-                * cgmath::Matrix4::from(self.rotation))
+                * cgmath::Matrix4::from(self.rotation)
+                * cgmath::Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z))
             .into(),
         }
     }
+}
 
-    pub fn make(x: u32, z: u32) -> Instance {
-        Instance {
-            position: cgmath::Vector3 {
-                x: 3.0 * x as f32 - 14.5,
-                y: 0.0,
-                z: -2.5 * z as f32 + 14.5,
-            },
-            rotation: cgmath::Quaternion::from_axis_angle(
-                cgmath::Vector3::unit_y(),
-                cgmath::Deg(0.0),
-            ),
-            x,
-            z,
-        }
+impl Instance {
+    pub fn make(
+        position: cgmath::Vector3<f32>,
+        rotation: cgmath::Quaternion<f32>,
+        scale: cgmath::Vector3<f32>,
+    ) -> Box<dyn MatrixInstance> {
+        Box::new(Instance {
+            position,
+            rotation,
+            scale,
+        })
     }
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'static> {
         use std::mem;
@@ -75,22 +82,50 @@ impl Instance {
             ],
         }
     }
-    pub fn update(&mut self, time: f32) {
-        let angle = 5.0 * self.z as f32 * time;
-        self.position.y = (time + self.x as f32).sin();
-        self.rotation =
-            cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_y(), cgmath::Deg(angle));
+}
+
+impl ArrayInstance {
+    pub fn make(x: u32, z: u32) -> Box<dyn MatrixInstance> {
+        Box::new(ArrayInstance {
+            x,
+            z,
+            instance: Instance {
+                position: cgmath::Vector3 {
+                    x: 3.0 * x as f32 - 14.5,
+                    y: 0.0,
+                    z: -2.5 * z as f32 + 14.5,
+                },
+                rotation: cgmath::Quaternion::from_axis_angle(
+                    cgmath::Vector3::unit_y(),
+                    cgmath::Deg(0.0),
+                ),
+                scale: cgmath::vec3(1.0, 1.0, 1.0),
+            },
+        })
     }
 }
 
+impl MatrixInstance for ArrayInstance {
+    fn to_raw(&self) -> InstanceRaw {
+        self.instance.to_raw()
+    }
+
+    fn update(&mut self, time: f32) {
+        let angle = 5.0 * self.z as f32 * time;
+        let x = self.x as f32;
+        self.instance.position.y = (0.5 * time + x).sin() * (0.5 + x / 9.0);
+        self.instance.rotation =
+            cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_y(), cgmath::Deg(angle));
+    }
+}
 pub struct InstanceSet {
-    pub set: Vec<Instance>,
+    pub set: Vec<Box<dyn MatrixInstance>>,
     buffer: Option<wgpu::Buffer>,
 }
 
 impl InstanceSet {
     pub fn create_buffer(&mut self, device: &wgpu::Device) {
-        let instance_raw_data: Vec<_> = self.set.iter().map(Instance::to_raw).collect();
+        let instance_raw_data: Vec<_> = self.set.iter().map(|i| i.to_raw()).collect();
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Instance Buffer"),
             contents: bytemuck::cast_slice(&instance_raw_data),
@@ -100,14 +135,14 @@ impl InstanceSet {
     }
 
     pub fn update_buffer(&self, queue: &wgpu::Queue) {
-        let instance_raw_data: Vec<_> = self.set.iter().map(Instance::to_raw).collect();
+        let instance_raw_data: Vec<_> = self.set.iter().map(|i| i.to_raw()).collect();
         queue.write_buffer(
             self.get_buffer().unwrap(),
             0,
             bytemuck::cast_slice(&instance_raw_data),
         );
     }
-    pub fn make(set: Vec<Instance>) -> InstanceSet {
+    pub fn make(set: Vec<Box<dyn MatrixInstance>>) -> InstanceSet {
         InstanceSet { set, buffer: None }
     }
     pub fn get_buffer(&self) -> Option<&wgpu::Buffer> {

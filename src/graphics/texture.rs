@@ -4,7 +4,7 @@ use image::GenericImageView;
 pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
+    pub sampler: Option<wgpu::Sampler>,
 }
 
 impl Texture {
@@ -72,7 +72,7 @@ impl Texture {
         Ok(Self {
             texture,
             view,
-            sampler,
+            sampler: Some(sampler),
         })
     }
 
@@ -82,6 +82,7 @@ impl Texture {
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
         label: &str,
+        sample_count: u32,
     ) -> Self {
         let size = wgpu::Extent3d {
             // 2.
@@ -93,7 +94,7 @@ impl Texture {
             label: Some(label),
             size,
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: Self::DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT // 3.
@@ -110,16 +111,45 @@ impl Texture {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Nearest,
-            compare: Some(wgpu::CompareFunction::LessEqual), // 5.
-            lod_min_clamp: -100.0,
-            lod_max_clamp: 100.0,
+            compare: Some(wgpu::CompareFunction::Less), // 5.
             ..Default::default()
         });
 
         Self {
             texture,
             view,
-            sampler,
+            sampler: Some(sampler),
+        }
+    }
+
+    pub fn create_msaa_texture(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        label: &str,
+    ) -> Self {
+        let size = wgpu::Extent3d {
+            // 2.
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: 4,
+            dimension: wgpu::TextureDimension::D2,
+            format: config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT, // 3.
+        };
+        let texture = device.create_texture(&desc);
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            texture,
+            view,
+            sampler: None,
         }
     }
 }
