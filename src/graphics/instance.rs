@@ -111,9 +111,9 @@ impl MatrixInstance for ArrayInstance {
     }
 
     fn update(&mut self, time: f32) {
-        let angle = 5.0 * self.z as f32 * time;
+        let angle = self.z as f32 * time;
         let x = self.x as f32;
-        self.instance.position.y = (0.5 * time + x).sin() * (0.5 + x / 9.0);
+        self.instance.position.y = (0.2 * time + x).sin() * (1.0 + 2.0 * x / 9.0);
         self.instance.rotation =
             cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_y(), cgmath::Deg(angle));
     }
