@@ -31,10 +31,14 @@ pub struct State {
     index_buffer: wgpu::Buffer,
     instance_set: InstanceSet,
     camera: Camera,
+    light_camera: Camera,
+    light_moving_direction: f32,
     index_len: usize,
 
     diffuse_bind_group: wgpu::BindGroup,
     camera_bind_group: wgpu::BindGroup,
+    camera_light_bind_group: wgpu::BindGroup,
+    depth_bind_group: wgpu::BindGroup,
     light_bind_group: wgpu::BindGroup,
 
     time: f32,
@@ -49,7 +53,7 @@ impl State {
 
         // The instance is a handle to our GPU
         // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let instance = wgpu::Instance::new(wgpu::Backends::DX12);
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -87,9 +91,14 @@ impl State {
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
         };
         surface.configure(&device, &config);
-        let depth_texture =
-            Texture::create_depth_texture(&device, &config, "depth_texture", Self::SAMPLE_COUNT);
-        let shadow_texture = Texture::create_depth_texture(&device, &config, "depth_texture", 1);
+        let depth_texture = Texture::create_depth_texture(
+            &device,
+            config.width,
+            config.height,
+            "depth_texture",
+            Self::SAMPLE_COUNT,
+        );
+        let shadow_texture = Texture::create_depth_texture(&device, 2048, 2048, "depth_texture", 1);
         let msaa_texture = Texture::create_msaa_texture(&device, &config, "msaa_texture");
 
         // Vertex / Index / Instance Buffer
@@ -120,7 +129,7 @@ impl State {
         instance_set.create_buffer(&device);
 
         // Texture Buffer
-        let diffuse_bytes = include_bytes!("dog.jpg");
+        let diffuse_bytes = include_bytes!("container.jpg");
         let diffuse_texture =
             Texture::from_bytes(&device, &queue, diffuse_bytes, "dogTexture").unwrap();
 
@@ -137,9 +146,9 @@ impl State {
         camera.create_buffer(&device);
 
         let mut light_camera = Camera::make_orthogonal(
-            (-10.0, 10.0, 10.0).into(),
+            (-10.0, 20.0, 0.0).into(),
             (0.0, 0.0, 0.0).into(),
-            cgmath::Vector3::unit_y(),
+            cgmath::Vector3::unit_x(),
             -50.0,
             50.0,
             -50.0,
@@ -169,9 +178,16 @@ impl State {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
+        let depth_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
                     wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -180,13 +196,13 @@ impl State {
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                         count: None,
                     },
                 ],
-                label: Some("texture_bind_group_layout"),
+                label: Some("depth_bind_group_layout"),
             });
 
         let camera_bind_group_layout =
@@ -204,6 +220,33 @@ impl State {
                 label: Some("camera_bind_group_layout"),
             });
 
+        let camera_light_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("camera_light_bind_group_layout"),
+            });
+
         let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
             entries: &[
@@ -217,18 +260,25 @@ impl State {
                         diffuse_texture.sampler.as_ref().unwrap(),
                     ),
                 },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
+
+        let depth_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &depth_bind_group_layout,
+            entries: &[
                 wgpu::BindGroupEntry {
-                    binding: 2,
+                    binding: 0,
                     resource: wgpu::BindingResource::TextureView(&shadow_texture.view),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 3,
+                    binding: 1,
                     resource: wgpu::BindingResource::Sampler(
                         shadow_texture.sampler.as_ref().unwrap(),
                     ),
                 },
             ],
-            label: Some("diffuse_bind_group"),
+            label: Some("depth_bind_group"),
         });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -253,6 +303,27 @@ impl State {
                     .as_entire_binding(),
             }],
             label: Some("light_bind_group"),
+        });
+
+        let camera_light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_light_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera
+                        .get_view_projection_buffer()
+                        .unwrap()
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: light_camera
+                        .get_view_projection_buffer()
+                        .unwrap()
+                        .as_entire_binding(),
+                },
+            ],
+            label: Some("camera_light_bind_group"),
         });
 
         // Root Signature
@@ -325,7 +396,10 @@ impl State {
             layout: Some(
                 &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("SolidRootSignature"),
-                    bind_group_layouts: &[&camera_bind_group_layout],
+                    bind_group_layouts: &[
+                        &camera_light_bind_group_layout,
+                        &depth_bind_group_layout,
+                    ],
                     push_constant_ranges: &[],
                 }),
             ),
@@ -428,8 +502,12 @@ impl State {
             vertex_buffer,
             index_buffer,
             index_len: INDICES.len(),
-            camera,
             instance_set,
+
+            camera,
+            light_camera,
+            light_moving_direction: 1.0,
+
             depth_texture,
             msaa_texture,
             shadow_texture,
@@ -437,6 +515,8 @@ impl State {
             diffuse_bind_group,
             camera_bind_group,
             light_bind_group,
+            camera_light_bind_group,
+            depth_bind_group,
 
             time: 0.0,
         }
@@ -450,7 +530,8 @@ impl State {
             self.surface.configure(&self.device, &self.config);
             self.depth_texture = Texture::create_depth_texture(
                 &self.device,
-                &self.config,
+                self.config.width,
+                self.config.height,
                 "depth_texture",
                 Self::SAMPLE_COUNT,
             );
@@ -516,6 +597,18 @@ impl State {
             instance.update(self.time);
         }
         self.instance_set.update_buffer(&self.queue);
+
+        // update light
+        {
+            let light_pos_x = &mut self.light_camera.eye.x;
+            if *light_pos_x >= 10.0 {
+                self.light_moving_direction = -1.0
+            } else if *light_pos_x <= -10.0 {
+                self.light_moving_direction = 1.0
+            }
+            *light_pos_x += self.light_moving_direction * 0.1;
+            self.light_camera.update(&self.queue);
+        }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -599,7 +692,8 @@ impl State {
             );
 
             render_pass.set_pipeline(&self.solid_pipeline);
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(0, &self.camera_light_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.depth_bind_group, &[]);
             render_pass.draw_indexed(
                 0..self.index_len as u32,
                 0,
