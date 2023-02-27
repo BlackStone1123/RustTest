@@ -52,6 +52,10 @@ impl Camera {
         );
     }
 
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.projector.resize(width, height)
+    }
+
     pub fn make_perspective(
         eye: cgmath::Point3<f32>,
         target: cgmath::Point3<f32>,
@@ -132,6 +136,7 @@ impl CameraUniform {
 
 trait Projector {
     fn get_projection_matrix(&self) -> cgmath::Matrix4<f32>;
+    fn resize(&mut self, width: u32, height: u32);
 }
 
 struct PerspectiveProjector {
@@ -144,6 +149,9 @@ struct PerspectiveProjector {
 impl Projector for PerspectiveProjector {
     fn get_projection_matrix(&self) -> cgmath::Matrix4<f32> {
         cgmath::perspective(cgmath::Deg(self.fovy), self.aspect, self.znear, self.zfar)
+    }
+    fn resize(&mut self, width: u32, height: u32) {
+        self.aspect = width as f32 / height as f32
     }
 }
 
@@ -167,4 +175,5 @@ impl Projector for OrthoProjector {
             self.far,
         )
     }
+    fn resize(&mut self, _width: u32, _height: u32) {}
 }
